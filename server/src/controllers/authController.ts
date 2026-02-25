@@ -1,0 +1,173 @@
+import { Request, Response } from "express"
+import jwt from "jsonwebtoken"
+import {
+  findByEmail,
+  register as registerService,
+  verifyPassword,
+} from "../services/authService"
+
+/* ================= ENV ================= */
+const JWT_SECRET = process.env.JWT_SECRET as string
+const JWT_EXPIRES_IN = "15m"
+
+/* ================= REGISTER ================= */
+export const register = async (req: Request, res: Response) => {
+  try {
+    const {
+      fullName,
+      email,
+      phone,
+      address,
+      password,
+      confirmPassword,
+    } = req.body
+
+    // ===== Validate =====
+    if (!fullName || !email || !phone || !password || !confirmPassword) {
+      return res.status(400).json({
+        message: "Vui lòng nhập đầy đủ thông tin",
+      })
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        message: "Mật khẩu phải có ít nhất 6 ký tự",
+      })
+    }
+
+    if (password !== confirmPassword) {
+      return res.status(400).json({
+        message: "Mật khẩu xác nhận không khớp",
+      })
+    }
+
+    // ===== Check email tồn tại =====
+    const existedUser = await findByEmail(email)
+    if (existedUser) {
+      return res.status(409).json({
+        message: "Email đã được sử dụng",
+      })
+    }
+
+    // ===== Create user =====
+    const user = await registerService({
+      fullName: fullName,
+      email,
+      phone,
+      address,
+      password,
+    })
+
+    return res.status(201).json({
+      message: "Đăng ký thành công",
+      user,
+    })
+  } catch (error: any) {
+    console.error("REGISTER ERROR:", error)
+    return res.status(500).json({
+      message: "Đăng ký thất bại",
+    })
+  }
+}
+
+/* ================= LOGIN ================= */
+export const login = async (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body
+
+    // ===== Validate =====
+    if (!email || !password) {
+      return res.status(400).json({
+        message: "Email và mật khẩu là bắt buộc",
+      })
+    }
+
+    // ===== Find user =====
+    const user = await findByEmail(email)
+    if (!user) {
+      return res.status(401).json({
+        message: "Email hoặc mật khẩu không đúng",
+      })
+    }
+
+    // ===== Check status =====
+    if (user.status !== "active") {
+      return res.status(403).json({
+        message: "Tài khoản đã bị vô hiệu hóa",
+      })
+    }
+
+    // ===== Verify password =====
+    const isValidPassword = await verifyPassword(
+      password,
+      user.password
+    )
+
+    if (!isValidPassword) {
+      return res.status(401).json({
+        message: "Email hoặc mật khẩu không đúng",
+      })
+    }
+
+    // ===== Create JWT =====
+    const accessToken = jwt.sign(
+      {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+      },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    )
+
+    // ===== Response =====
+    delete user.password
+
+    return res.status(200).json({
+      message: "Đăng nhập thành công",
+      accessToken,
+      user,
+    })
+  } catch (error: any) {
+    console.error("LOGIN ERROR:", error)
+    return res.status(500).json({
+      message: "Đăng nhập thất bại",
+    })
+  }
+}
+// ================= REFRESH TOKEN =================
+export const refreshToken = async (req: Request, res: Response) => {
+  try {
+    const refreshToken = req.cookies?.refresh_token
+
+    if (!refreshToken) {
+      return res.status(401).json({ message: "No refresh token" })
+    }
+
+    jwt.verify(
+      refreshToken,
+      process.env.REFRESH_TOKEN_SECRET as string,
+      (err: any, decoded: any) => {
+        if (err) {
+          return res.status(403).json({ message: "Invalid refresh token" })
+        }
+
+        const newAccessToken = jwt.sign(
+          { userId: decoded.userId, role: decoded.role },
+          process.env.ACCESS_TOKEN_SECRET as string,
+          { expiresIn: "15m" }
+        )
+
+        res.json({ accessToken: newAccessToken })
+      }
+    )
+  } catch (error) {
+    res.status(500).json({ message: "Refresh token error" })
+  }
+}
+
+// ================= LOGOUT =================
+export const logout = async (_req: Request, res: Response) => {
+  res.clearCookie("refresh_token")
+  return res.json({ message: "Logout successful" })
+}

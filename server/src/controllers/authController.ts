@@ -75,14 +75,12 @@ export const login = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body
 
-    // ===== Validate =====
     if (!email || !password) {
       return res.status(400).json({
         message: "Email và mật khẩu là bắt buộc",
       })
     }
 
-    // ===== Find user =====
     const user = await findByEmail(email)
     if (!user) {
       return res.status(401).json({
@@ -90,37 +88,41 @@ export const login = async (req: Request, res: Response) => {
       })
     }
 
-    // ===== Check status =====
     if (user.status !== "active") {
       return res.status(403).json({
         message: "Tài khoản đã bị vô hiệu hóa",
       })
     }
 
-    // ===== Verify password =====
-    const isValidPassword = await verifyPassword(
-      password,
-      user.password
-    )
-
+    const isValidPassword = await verifyPassword(password, user.password)
     if (!isValidPassword) {
       return res.status(401).json({
         message: "Email hoặc mật khẩu không đúng",
       })
     }
 
-    // ===== Create JWT =====
+    // ===== ACCESS TOKEN =====
     const accessToken = jwt.sign(
-      {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-      },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN }
+      { id: user.id, role: user.role },
+      process.env.ACCESS_TOKEN_SECRET as string,
+      { expiresIn: "15m" }
     )
 
-    // ===== Response =====
+    // ===== REFRESH TOKEN =====
+    const refreshToken = jwt.sign(
+      { id: user.id, role: user.role },
+      process.env.REFRESH_TOKEN_SECRET as string,
+      { expiresIn: "7d" }
+    )
+
+    // ===== SET COOKIE =====
+    res.cookie("refresh_token", refreshToken, {
+      httpOnly: true,
+      secure: true,        // BẮT BUỘC production
+      sameSite: "none",    // BẮT BUỘC cross-site
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    })
+
     delete user.password
 
     return res.status(200).json({
@@ -128,7 +130,7 @@ export const login = async (req: Request, res: Response) => {
       accessToken,
       user,
     })
-  } catch (error: any) {
+  } catch (error) {
     console.error("LOGIN ERROR:", error)
     return res.status(500).json({
       message: "Đăng nhập thất bại",
@@ -138,14 +140,14 @@ export const login = async (req: Request, res: Response) => {
 // ================= REFRESH TOKEN =================
 export const refreshToken = async (req: Request, res: Response) => {
   try {
-    const refreshToken = req.cookies?.refresh_token
+    const token = req.cookies?.refresh_token
 
-    if (!refreshToken) {
+    if (!token) {
       return res.status(401).json({ message: "No refresh token" })
     }
 
     jwt.verify(
-      refreshToken,
+      token,
       process.env.REFRESH_TOKEN_SECRET as string,
       (err: any, decoded: any) => {
         if (err) {
@@ -153,7 +155,7 @@ export const refreshToken = async (req: Request, res: Response) => {
         }
 
         const newAccessToken = jwt.sign(
-          { userId: decoded.userId, role: decoded.role },
+          { id: decoded.id, role: decoded.role },
           process.env.ACCESS_TOKEN_SECRET as string,
           { expiresIn: "15m" }
         )
@@ -165,7 +167,6 @@ export const refreshToken = async (req: Request, res: Response) => {
     res.status(500).json({ message: "Refresh token error" })
   }
 }
-
 // ================= LOGOUT =================
 export const logout = async (_req: Request, res: Response) => {
   res.clearCookie("refresh_token")
